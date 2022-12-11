@@ -1,7 +1,11 @@
+#cython: language_level=3
 from libcpp cimport bool
 from libcpp.string cimport string
 from cpython cimport bool as PyBool
 from cpython.object cimport Py_EQ, Py_NE
+from libcpp.memory cimport unique_ptr
+
+DEF USE_CSTRING = True
 
 ctypedef bool GBool
 DEF PRECISION=1e-6
@@ -13,12 +17,13 @@ def poppler_version():
     return version_string()
 
 cdef extern from "GlobalParams.h":
-    GlobalParams *globalParams
+    unique_ptr[GlobalParams] globalParams
     cdef cppclass GlobalParams:
+        GlobalParams()
         void setErrQuiet(bool)
         bool getErrQuiet()
- # we need to init globalParams - just once during program run
-globalParams = new GlobalParams()
+
+globalParams = unique_ptr[GlobalParams](new GlobalParams())
 
 IF USE_CSTRING:
     cdef extern from "goo/GooString.h":
@@ -34,6 +39,7 @@ ELSE:
             int getLength()
             const char *getCString()
             char getChar(int i)
+
 cdef extern from "OutputDev.h":
     cdef cppclass OutputDev:
         pass
@@ -41,65 +47,77 @@ cdef extern from "OutputDev.h":
 cdef extern from 'Annot.h':
     cdef cppclass Annot:
         pass
-        
+
+cdef extern from "Object.h":
+    cdef cppclass Object:
+        pass
+
+cdef extern from "Stream.h":
+    cdef cppclass BaseStream:
+        pass
+    cdef cppclass MemStream:
+        MemStream(const char * raw_doc_data, long long offset, long long raw_data_length, Object dictA)
+
+
 cdef extern from "PDFDoc.h":
     cdef cppclass PDFDoc:
+        PDFDoc(BaseStream *strA)
         int getNumPages()
         void displayPage(OutputDev *out, int page,
            double hDPI, double vDPI, int rotate,
-           GBool useMediaBox, GBool crop, GBool printing,
-           GBool (*abortCheckCbk)(void *data) = NULL,
+           bool useMediaBox, bool crop, bool printing,
+           bool (*abortCheckCbk)(void *data) = NULL,
            void *abortCheckCbkData = NULL,
-            GBool (*annotDisplayDecideCbk)(Annot *annot, void *user_data) = NULL,
-            void *annotDisplayDecideCbkData = NULL, GBool copyXRef = False)
+            bool (*annotDisplayDecideCbk)(Annot *annot, void *user_data) = NULL,
+            void *annotDisplayDecideCbkData = NULL, bool copyXRef = False)
         double getPageMediaWidth(int page)
         double getPageMediaHeight(int page)
         
 cdef extern from "PDFDocFactory.h":
     cdef cppclass PDFDocFactory:
         PDFDocFactory()
-        PDFDoc *createPDFDoc(const GooString &uri, GooString *ownerPassword = NULL,
-                             GooString *userPassword = NULL, void *guiDataA = NULL)
+        PDFDoc* createPDFDoc(const GooString &uri) #, GooString *ownerPassword,
+                              #GooString *userPassword, void *guiDataA)
         
 cdef extern from "TextOutputDev.h":
     cdef cppclass TextOutputDev:
-        TextOutputDev(char *fileName, GBool physLayoutA,
-        double fixedPitchA, GBool rawOrderA, GBool append)
-        TextPage *takeText()
+        TextOutputDev(char *fileName, bool physLayoutA,
+        double fixedPitchA, bool rawOrderA, bool append)
+        const TextPage *takeText()
         
     cdef cppclass TextPage:
         void incRefCnt()
         void decRefCnt()
-        TextFlow *getFlows()
+        const TextFlow *getFlows()
         
     cdef cppclass TextFlow:
-        TextFlow *getNext()
-        TextBlock *getBlocks()
+        const TextFlow *getNext()
+        const TextBlock *getBlocks()
         
     cdef cppclass TextBlock:
-        TextBlock *getNext()
-        TextLine *getLines()
+        const TextBlock *getNext()
+        const TextLine *getLines()
         void getBBox(double *xMinA, double *yMinA, double *xMaxA, double *yMaxA)
         
     cdef cppclass TextLine:
-        TextWord *getWords()
-        TextLine *getNext()
+        const TextWord *getWords()
+        const TextLine *getNext()
         
     cdef cppclass TextWord:
-        TextWord *getNext()
+        const TextWord *getNext()
         int getLength()
-        GooString *getText()
+        const GooString *getText()
         void getBBox(double *xMinA, double *yMinA, double *xMaxA, double *yMaxA)
         void getCharBBox(int charIdx, double *xMinA, double *yMinA,
            double *xMaxA, double *yMaxA)
         GBool hasSpaceAfter  ()
         TextFontInfo *getFontInfo(int idx)
-        GooString *getFontName(int idx)
+        const GooString *getFontName(int idx)
         double getFontSize()
         void getColor(double *r, double *g, double *b)
         
     cdef cppclass TextFontInfo:
-        GooString *getFontName() 
+        const GooString *getFontName() 
         double getAscent();
         double getDescent();
 
@@ -116,34 +134,42 @@ cdef double RESOLUTION=72.0
 
 cdef class Document:
     cdef: 
-        PDFDoc *_doc
+        unique_ptr[PDFDoc] _doc
         int _pg
         PyBool phys_layout
         double fixed_pitch
-    def __cinit__(self, char *fname, PyBool phys_layout=False, double fixed_pitch=0, PyBool quiet=False):
-        self._doc=PDFDocFactory().createPDFDoc(GooString(fname))
+        unique_ptr[MemStream] _stream
+
+    def __cinit__(self, char *data_or_file, long long data_size=0, PyBool phys_layout=False, double fixed_pitch=0, PyBool quiet=False):
+        if data_size == 0:
+            self._doc = unique_ptr[PDFDoc](PDFDocFactory().createPDFDoc(GooString(data_or_file))) #, <GooString*>NULL,<GooString*>NULL,<GooString*>NULL)
+        else:
+            self._stream = unique_ptr[MemStream](new MemStream(data_or_file, 0, data_size, <Object>(NULL)))
+            self._doc = unique_ptr[PDFDoc](new PDFDoc(<BaseStream*>(self._stream.get())))
         self._pg=0
         self.phys_layout=phys_layout
         self.fixed_pitch=fixed_pitch
 
         if quiet:
-            globalParams.setErrQuiet(True)
+            localParams.get().setErrQuiet(True)
         
     def __dealloc__(self):
-        if self._doc != NULL:
-            del self._doc
+        self._doc.release()
+        self._stream.release()
+        #if self._doc != NULL:
+        #    del self._doc
             
     property no_of_pages:
         def __get__(self):
-            return self._doc.getNumPages()  
+            return self._doc.get().getNumPages()
         
     cdef void render_page(self, int page_no, OutputDev *dev):
-        self._doc.displayPage(dev, page_no, RESOLUTION, RESOLUTION, 0, True, False, False)
+        self._doc.get().displayPage(dev, page_no, RESOLUTION, RESOLUTION, 0, False, False, False)
      
     cdef object get_page_size(self, page_no):
             cdef double w,h
-            w=self._doc.getPageMediaWidth(page_no)
-            h= self._doc.getPageMediaHeight(page_no)
+            w=self._doc.get().getPageMediaWidth(page_no)
+            h= self._doc.get().getPageMediaHeight(page_no)
             return (w,h)
             
     def __iter__(self):
@@ -154,6 +180,7 @@ cdef class Document:
     
     def __next__(self):
         if self._pg >= self.no_of_pages:
+            self._pg = 0
             raise StopIteration()
         self._pg+=1
         return self.get_page(self._pg)
@@ -165,17 +192,25 @@ cdef class Page:
         int page_no
         TextPage *page
         Document doc
-        TextFlow *curr_flow
+        const TextFlow *curr_flow
         
     def __cinit__(self, int page_no, Document doc):
+        print("init doc")
         cdef TextOutputDev *dev
         self.page_no=page_no
-        dev = new TextOutputDev(NULL, doc.phys_layout, doc.fixed_pitch, False, False);
+        cdef char* filedest = "-"
+        dev = new TextOutputDev(filedest, doc.phys_layout, doc.fixed_pitch, False, False)
+        print("new text output")
         doc.render_page(page_no, <OutputDev*> dev)
+        print("render page")
         self.page= dev.takeText()
+        print("take text")
         del dev
+        print("delete device")
         self.curr_flow = self.page.getFlows()
+        print("curr flow")
         self.doc=doc
+        print("init doc done")
     
     def __dealloc__(self):
         if self.page != NULL:
@@ -187,9 +222,10 @@ cdef class Page:
     def __next__(self):
         cdef Flow f
         if not self.curr_flow:
+            self.curr_flow = self.page.getFlows()
             raise StopIteration()
         f=Flow(self)
-        self.curr_flow=self.curr_flow.getNext()
+        self.curr_flow= self.curr_flow.getNext()
         return f
             
     property page_no:
@@ -203,12 +239,12 @@ cdef class Page:
         
 cdef class Flow:
     cdef: 
-        TextFlow *flow
-        TextBlock *curr_block
+        const TextFlow *flow
+        const TextBlock *curr_block
     
     def __cinit__(self, Page pg):
         self.flow=pg.curr_flow
-        self.curr_block=self.flow.getBlocks()
+        self.curr_block= self.flow.getBlocks()
     
     def __iter__(self):
         return self
@@ -216,6 +252,7 @@ cdef class Flow:
     def __next__(self):
         cdef Block b
         if not self.curr_block:
+            self.curr_block= self.flow.getBlocks()
             raise StopIteration()
         b=Block(self)
         self.curr_block=self.curr_block.getNext()
@@ -223,8 +260,8 @@ cdef class Flow:
     
 cdef class Block:
     cdef:
-        TextBlock *block
-        TextLine *curr_line
+        const TextBlock *block
+        const TextLine *curr_line
         
     def __cinit__(self, Flow flow):
         self.block= flow.curr_block
@@ -241,6 +278,7 @@ cdef class Block:
     def __next__(self):
         cdef Line l
         if not self.curr_line:
+            self.curr_line=self.block.getLines()
             raise StopIteration()
         l=Line(self)
         self.curr_line=self.curr_line.getNext()
@@ -434,7 +472,7 @@ cdef class CompactList:
         
 cdef class Line:
     cdef:
-        TextLine *line
+        const TextLine *line
         double x1, y1, x2, y2
         unicode _text
         list _bboxes
@@ -457,13 +495,13 @@ cdef class Line:
            
     def _get_text(self):
         cdef: 
-            TextWord *w
-            GooString *s
+            const TextWord *w
+            const GooString *s
             double bx1,bx2, by1, by2
             list words = []
             int offset = 0, i, wlen
             BBox last_bbox 
-            FontInfo last_font
+            FontInfo last_fontF
             double r,g,b
         
         w=self.line.getWords()
@@ -521,7 +559,7 @@ cdef class Line:
                 words.append(u' ')
                 self._bboxes.append(BBox(last_bbox.x2, last_bbox.y1, last_bbox.x2, last_bbox.y2))
                 self._fonts.append(last_font)
-            w=w.getNext()
+            w=<TextWord*>w.getNext()
         self._text= u''.join(words)
         
     property bbox:
@@ -546,3 +584,4 @@ cdef class Line:
     
     
     
+

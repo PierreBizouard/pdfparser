@@ -1,6 +1,6 @@
-# pdfparser
+pdfparser
+---------
 
-[![Python build and test](https://github.com/izderadicka/pdfparser/actions/workflows/python-package.yml/badge.svg)](https://github.com/izderadicka/pdfparser/actions/workflows/python-package.yml)
 
 Python binding for libpoppler - focused on text extraction from PDF documents.
 
@@ -17,6 +17,12 @@ Requires recent libpoppler >= 0.40 - so I'd recommend to build it from source to
 but it works also with recent libpoppler library present in common linux distributions (then it requires 
 dev package to build). See below for installation instructions.
 
+
+We can grab poppler from https://github.com/oschwartz10612/poppler-windows
+
+We hardcoded poppler path in the pkg-config stuff
+
+Note that PDF must end with the right stuff
 
 Available under GPL v3 or any later version license (libpoppler is also GPL).
 
@@ -84,30 +90,7 @@ pip install git+https://github.com/izderadicka/pdfparser
 pip install cython
 pip install git+https://github.com/izderadicka/pdfparser
 ```
-
-## Usage
-
-See `tests/dump_file.py` for available arguments and some basic example.
-```
-usage: dump_file.py [-h] [--char-details] [-f FIRST_PAGE] [-l LAST_PAGE]
-                    [--phys-layout] [--fixed-pitch FIXED_PITCH] [-q]
-                    document
-
-positional arguments:
-  document              Document file
-
-optional arguments:
-  -h, --help            show this help message and exit
-  --char-details        print character details
-  -f FIRST_PAGE, --first-page FIRST_PAGE
-                        first page
-  -l LAST_PAGE, --last-page LAST_PAGE
-                        first page
-  --phys-layout         Physical Layout - param for text analysis
-  --fixed-pitch FIXED_PITCH
-                        Fixed pitch - param for text analysis - app. max space size
-  -q, --quiet           Silence all output from poppler
-```
+    
 
 ## Speed comparisons
 
@@ -140,28 +123,3 @@ pdfparser code used in test
                         print(l.text[i].encode('UTF-8'), '(%0.2f, %0.2f, %0.2f, %0.2f)'% l.char_bboxes[i].as_tuple(),\
                             l.char_fonts[i].name, l.char_fonts[i].size, l.char_fonts[i].color,)
                     print()
-                    
-## How to modify parsing algorithm?
-
-As you probably know PDF is document format intended for printing, so all logical structure of the text 
-is lost (paragraphs, columns, tables, etc.). libpoppler is trying to reconstruct some of this logical 
-structure of the document back by comparing physical positions of characters on the page and their mutual
-distances and reconstructing back words, lines, paragraphs, columns.  
-
-
-Component which is responsible for this reconstruction is C++ class `TextOutputDev` (in poppler/TextOutputDev.cc). 
-It's using many constants for this jobs, vast majority of constants in hardcoded into code.
-Actually the only parameter that is available to Python code is combination of parameters `phys_layout` and
-`fixed_pitch`, which influences how text is ordered into columns. If you put `phys_layout` to True and
-`fixed_pitch` to value > 0, then `fixed_pitch` will be used as maximum distance between words in a line and 
-minimum distance between columns (in pixels).  I think `phys_layout` also influences order of boxes 
-in page iteration. However influence of these parameters is not quite straight forward - so you'll need to 
-experiment to see how it works in your case.
-
-
-Another problem I encoutered is vertical spacing between lines in single box (paragraph) - this parameter 
-is unfortunatelly fixed in libpoppler - it's constant `maxLineSpacingDelta` in poppler/TextOutputDev.cc, which 
-is set to 1.5 (font size).  If you need to accept bigger line spacing in paragraph then, you'll have to change it
-in C++ code and recompile libpoppler (in this case I recommend to make library local to pdfparser package). 
-I've tried with value 2.0 and it seems to work fine.
-
